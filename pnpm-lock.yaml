@@ -76,7 +76,7 @@ importers:
   packages/esbuild:
     dependencies:
       '@polarsignals/sourcemap-core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@rollup/plugin-commonjs':
