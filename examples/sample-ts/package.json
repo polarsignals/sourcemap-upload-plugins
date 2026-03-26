@@ -1,0 +1,33 @@
+{
+  "name": "@polarsignals/sample-ts-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TypeScript server for eBPF profiling with source map support",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "build:esbuild": "node esbuild.config.js",
+    "build:tsc": "rm -rf dist-tsc && tsc --project tsconfig.tsc.json && sourcemap-upload dist-tsc --verbose",
+    "start": "node dist/server.js",
+    "start:tsc": "node dist-tsc/server.js",
+    "clean": "rm -rf dist dist-tsc"
+  },
+  "keywords": [
+    "typescript",
+    "profiling",
+    "ebpf",
+    "sourcemap"
+  ],
+  "author": "Polarsignals",
+  "license": "MIT",
+  "devDependencies": {
+    "@polarsignals/sourcemap-cli": "workspace:^",
+    "@polarsignals/sourcemap-esbuild-plugin": "workspace:^",
+    "@types/node": "^20.10.0",
+    "esbuild": "^0.19.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
