@@ -22,7 +22,6 @@ await esbuild.build({
   plugins: [
     debugIdPlugin({
       projectID: process.env.POLARSIGNALS_PROJECT_ID,
-      debuginfoServerUrl: process.env.POLARSIGNALS_SERVER_URL,
       token: process.env.POLARSIGNALS_TOKEN,
     }),
   ],
@@ -37,7 +36,7 @@ Debug ID injection and source map upload happen automatically at the end of each
 |--------|------|----------|-------------|
 | `projectID` | `string` | Yes | Polar Signals project ID |
 | `token` | `string` | Yes | Authentication token |
-| `debuginfoServerUrl` | `string` | Yes | Debuginfo server URL (e.g. `grpc.polarsignals.com:443`) |
+| `debuginfoServerUrl` | `string` | No | Debuginfo server URL (default: `grpc.polarsignals.com:443`) |
 | `verbose` | `boolean` | No | Enable verbose logging (default: `false`) |
 | `insecure` | `boolean` | No | Skip TLS verification (default: `false`) |
 

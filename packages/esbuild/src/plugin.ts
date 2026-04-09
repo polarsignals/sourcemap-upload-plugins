@@ -18,8 +18,8 @@ export interface DebugIdPluginOptions {
   verbose?: boolean;
   /** Project ID for identifying uploads */
   projectID: string;
-  /** Debuginfo server URL for uploading source maps */
-  debuginfoServerUrl: string;
+  /** Debuginfo server URL for uploading source maps (default: grpc.polarsignals.com:443) */
+  debuginfoServerUrl?: string;
   /** Authentication token for debuginfo server */
   token: string;
   /** Allow insecure SSL connections (skip certificate validation) */
@@ -63,7 +63,7 @@ export function debugIdPlugin(options: DebugIdPluginOptions): Plugin {
             console.log(`Injecting debug IDs in output directory: ${outputDir}`);
           }
 
-          await injectDebugIdsInOutputDir(outputDir, { verbose, projectID, debuginfoServerUrl: options.debuginfoServerUrl, token: options.token, insecure: options.insecure });
+          await injectDebugIdsInOutputDir(outputDir, { verbose, projectID, debuginfoServerUrl: options.debuginfoServerUrl ?? 'grpc.polarsignals.com:443', token: options.token, insecure: options.insecure });
 
         } catch (error) {
           // Add error to build results but don't fail the build
