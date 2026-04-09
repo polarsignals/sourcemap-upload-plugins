@@ -50,7 +50,6 @@ await esbuild.build({
   plugins: [
     debugIdPlugin({
       projectID: process.env.POLARSIGNALS_PROJECT_ID,
-      debuginfoServerUrl: process.env.POLARSIGNALS_SERVER_URL,
       token: process.env.POLARSIGNALS_TOKEN,
     }),
   ],
