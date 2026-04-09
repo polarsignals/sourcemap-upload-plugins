@@ -1,6 +1,6 @@
 {
   "name": "@polarsignals/sourcemap-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI tool for injecting debug IDs and uploading source maps to Polar Signals",
   "bin": {
     "sourcemap-upload": "./dist/cli.js"
