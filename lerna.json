@@ -4,7 +4,8 @@
   "command": {
     "publish": {
       "conventionalCommits": true,
-      "provenance": true
+      "provenance": true,
+      "access": "public"
     },
     "version": {
       "allowBranch": "main"
