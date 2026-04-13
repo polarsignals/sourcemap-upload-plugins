@@ -8,6 +8,7 @@ import {
   BuildIDType,
   UploadInstructions_UploadStrategy
 } from '@parca/client';
+import { StickyProgress } from './sticky-progress';
 
 /**
  * Options for uploading source maps to debuginfo server
@@ -25,6 +26,10 @@ export interface UploadOptions {
   force?: boolean;
   /** Allow insecure SSL connections (skip certificate validation) */
   insecure?: boolean;
+  /** Maximum number of concurrent uploads (default: 50, set to 1 for serial) */
+  concurrency?: number;
+  /** Maximum number of retry passes for failed uploads (default: 3, set to 0 to disable) */
+  maxRetries?: number;
 }
 
 /**
@@ -89,21 +94,37 @@ function calculateSourceMapHash(content: Uint8Array): string {
 }
 
 /**
- * Uploads source map to debuginfo server
+ * Uploads source map to debuginfo server.
+ * Creates a one-shot gRPC client for this single upload. For batch uploads,
+ * use `uploadSourceMaps` which reuses a single client across all files.
  */
 export async function uploadSourceMap(
   sourceMapInfo: SourceMapInfo,
   options: UploadOptions
 ): Promise<UploadResult> {
+  const { serverUrl, insecure = false } = options;
+  const client = createDebuginfoClient(serverUrl, insecure);
+  return uploadOneSourceMap(client, sourceMapInfo, options);
+}
+
+/**
+ * Internal: uploads a single source map using the provided gRPC client.
+ */
+async function uploadOneSourceMap(
+  client: DebuginfoServiceClient,
+  sourceMapInfo: SourceMapInfo,
+  options: UploadOptions
+): Promise<UploadResult> {
   const { debugId, content, jsFilePath } = sourceMapInfo;
-  const { serverUrl, token, projectID, verbose = false, force = false, insecure = false } = options;
+  const { token, projectID, verbose = false, force = false } = options;
+
+  const startTime = Date.now();
 
   if (verbose) {
     console.log(`[upload] Uploading source map for ${jsFilePath} (debug ID: ${debugId})`);
   }
 
   try {
-    const client = createDebuginfoClient(serverUrl, insecure);
     const metadata = createRpcMetadata(token, projectID);
     const hash = calculateSourceMapHash(content);
     const size = content.length;
@@ -123,7 +144,8 @@ export async function uploadSourceMap(
 
     if (!shouldUploadResponse.response.shouldInitiateUpload) {
       if (verbose) {
-        console.log(`   [skip] Skipping upload: ${shouldUploadResponse.response.reason}`);
+        const elapsed = Date.now() - startTime;
+        console.log(`   [skip] Skipping upload: ${shouldUploadResponse.response.reason} (${elapsed}ms)`);
       }
       return {
         success: true,
@@ -233,7 +255,8 @@ export async function uploadSourceMap(
     }, { meta: metadata });
 
     if (verbose) {
-      console.log(`   [ok] Source map uploaded successfully`);
+      const elapsed = Date.now() - startTime;
+      console.log(`   [ok] Source map uploaded successfully (${elapsed}ms)`);
     }
 
     return {
@@ -249,7 +272,8 @@ export async function uploadSourceMap(
         : 'Unknown error';
 
     if (verbose) {
-      console.log(`   [error] Upload failed: ${errorMessage}`);
+      const elapsed = Date.now() - startTime;
+      console.log(`   [error] Upload failed: ${errorMessage} (${elapsed}ms)`);
     }
 
     return {
@@ -261,18 +285,92 @@ export async function uploadSourceMap(
 }
 
 /**
- * Uploads multiple source maps to debuginfo server
+ * Uploads multiple source maps to debuginfo server.
+ * Creates a single gRPC client and reuses it across all uploads.
+ * Runs uploads in parallel up to `options.concurrency` (default 50, set to 1 for serial).
+ * Failed uploads are retried up to `options.maxRetries` times (default 3).
  */
 export async function uploadSourceMaps(
   sourceMaps: SourceMapInfo[],
   options: UploadOptions
 ): Promise<UploadResult[]> {
-  const results: UploadResult[] = [];
+  const { serverUrl, insecure = false, verbose = false, concurrency = 50, maxRetries = 3 } = options;
+  const startTime = Date.now();
 
-  for (const sourceMapInfo of sourceMaps) {
-    const result = await uploadSourceMap(sourceMapInfo, options);
-    results.push(result);
+  const client = createDebuginfoClient(serverUrl, insecure);
+
+  // Results indexed by original position in sourceMaps
+  const results: UploadResult[] = new Array(sourceMaps.length);
+  // Indices of items still needing an attempt (initially: all of them)
+  let pendingIndices: number[] = sourceMaps.map((_, i) => i);
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (pendingIndices.length === 0) break;
+
+    if (attempt > 0 && verbose) {
+      console.log(`[upload] Retry ${attempt}/${maxRetries}: ${pendingIndices.length} failed upload(s)`);
+    }
+
+    const passLabel = attempt === 0 ? undefined : `retry ${attempt}/${maxRetries}`;
+    const progress = new StickyProgress(pendingIndices.length, passLabel);
+    progress.start();
+
+    try {
+      const passResults = await parallelMap(pendingIndices, concurrency, async (originalIndex) => {
+        const result = await uploadOneSourceMap(client, sourceMaps[originalIndex], options);
+        progress.recordResult(result);
+        return { originalIndex, result };
+      });
+
+      const stillFailed: number[] = [];
+      for (const { originalIndex, result } of passResults) {
+        results[originalIndex] = result;
+        if (!result.success) {
+          stillFailed.push(originalIndex);
+        }
+      }
+      pendingIndices = stillFailed;
+    } finally {
+      progress.done();
+    }
   }
 
+  if (verbose) {
+    const elapsed = Date.now() - startTime;
+    const uploaded = results.filter(r => r.success && !r.skipped).length;
+    const skipped = results.filter(r => r.skipped).length;
+    const failed = results.filter(r => !r.success).length;
+    const seconds = (elapsed / 1000).toFixed(2);
+    const avgPerFile = sourceMaps.length > 0 ? (elapsed / sourceMaps.length).toFixed(0) : '0';
+    console.log(`[upload] Total: ${sourceMaps.length} files in ${seconds}s (avg ${avgPerFile}ms/file, concurrency=${concurrency}) — uploaded: ${uploaded}, skipped: ${skipped}, failed: ${failed}`);
+  }
+
+  return results;
+}
+
+
+/**
+ * Runs `fn` over `items` with at most `concurrency` in flight at a time.
+ * Preserves result order. Errors are returned as values via the result type
+ * (the caller's `fn` must not throw).
+ */
+async function parallelMap<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }

@@ -95,6 +95,8 @@ Optional:
   --insecure                Skip TLS verification
   --include <glob>          Glob pattern for JS files (default: **/*.js)
   --exclude <glob>          Glob pattern to exclude (default: **/node_modules/**)
+  --concurrency <n>         Maximum parallel uploads, 1 for serial (default: 50)
+  --retries <n>             Number of retry passes for failed uploads (default: 3)
 ```
 
 Environment variables (`POLARSIGNALS_PROJECT_ID`, `POLARSIGNALS_TOKEN`, `POLARSIGNALS_SERVER_URL`) can be used instead of flags.
