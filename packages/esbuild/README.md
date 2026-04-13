@@ -39,6 +39,8 @@ Debug ID injection and source map upload happen automatically at the end of each
 | `debuginfoServerUrl` | `string` | No | Debuginfo server URL (default: `grpc.polarsignals.com:443`) |
 | `verbose` | `boolean` | No | Enable verbose logging (default: `false`) |
 | `insecure` | `boolean` | No | Skip TLS verification (default: `false`) |
+| `concurrency` | `number` | No | Maximum parallel uploads, 1 for serial (default: `50`) |
+| `maxRetries` | `number` | No | Number of retry passes for failed uploads (default: `3`) |
 
 ## How It Works
 

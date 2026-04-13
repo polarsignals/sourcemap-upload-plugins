@@ -6,7 +6,7 @@ import {
   injectDebugIdIntoSourceMap,
   isValidSourceMap,
   injectDebugIdIntoJs,
-  uploadSourceMap,
+  uploadSourceMaps,
   type SourceMapInfo,
 } from '@polarsignals/sourcemap-core';
 
@@ -24,6 +24,10 @@ export interface DebugIdPluginOptions {
   token: string;
   /** Allow insecure SSL connections (skip certificate validation) */
   insecure?: boolean;
+  /** Maximum parallel uploads (default: 50, set to 1 for serial) */
+  concurrency?: number;
+  /** Number of retry passes for failed uploads (default: 3, set to 0 to disable) */
+  maxRetries?: number;
 }
 
 /**
@@ -63,7 +67,15 @@ export function debugIdPlugin(options: DebugIdPluginOptions): Plugin {
             console.log(`Injecting debug IDs in output directory: ${outputDir}`);
           }
 
-          await injectDebugIdsInOutputDir(outputDir, { verbose, projectID, debuginfoServerUrl: options.debuginfoServerUrl ?? 'grpc.polarsignals.com:443', token: options.token, insecure: options.insecure });
+          await injectDebugIdsInOutputDir(outputDir, {
+            verbose,
+            projectID,
+            debuginfoServerUrl: options.debuginfoServerUrl ?? 'grpc.polarsignals.com:443',
+            token: options.token,
+            insecure: options.insecure,
+            concurrency: options.concurrency,
+            maxRetries: options.maxRetries,
+          });
 
         } catch (error) {
           // Add error to build results but don't fail the build
@@ -88,118 +100,128 @@ export function debugIdPlugin(options: DebugIdPluginOptions): Plugin {
 }
 
 /**
- * Injects debug IDs into JavaScript files and source maps in the output directory
- * @param outputDir - The output directory to process
- * @param options - Processing options
+ * Injects debug IDs into JavaScript files and source maps in the output directory,
+ * then uploads them in parallel via the batch upload API.
  */
 async function injectDebugIdsInOutputDir(
   outputDir: string,
-  options: { verbose: boolean; projectID: string; debuginfoServerUrl: string; token: string; insecure?: boolean }
+  options: {
+    verbose: boolean;
+    projectID: string;
+    debuginfoServerUrl: string;
+    token: string;
+    insecure?: boolean;
+    concurrency?: number;
+    maxRetries?: number;
+  }
 ): Promise<void> {
-  const { verbose, projectID, debuginfoServerUrl, token, insecure = false } = options;
+  const { verbose, projectID, debuginfoServerUrl, token, insecure = false, concurrency, maxRetries } = options;
 
-  // Upload is now always configured since all fields are required
-  const shouldUpload = true;
-
+  let files: import('fs').Dirent[];
   try {
-    // Get all files in the output directory
-    const files = await fs.readdir(outputDir, { withFileTypes: true });
+    files = await fs.readdir(outputDir, { withFileTypes: true });
+  } catch (error) {
+    throw new Error(`Failed to process output directory ${outputDir}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
-    // Find JavaScript files with corresponding source maps
-    const jsFiles = files
-      .filter(file => file.isFile() && file.name.endsWith('.js'))
-      .map(file => file.name);
+  const jsFiles = files
+    .filter(file => file.isFile() && file.name.endsWith('.js'))
+    .map(file => file.name);
 
-    for (const jsFileName of jsFiles) {
-      const jsFilePath = join(outputDir, jsFileName);
-      const sourceMapPath = join(outputDir, `${jsFileName}.map`);
+  // Phase 1: inject debug IDs and collect upload bundles
+  const bundles: SourceMapInfo[] = [];
 
-      try {
-        // Check if source map exists
-        await fs.access(sourceMapPath);
+  for (const jsFileName of jsFiles) {
+    const jsFilePath = join(outputDir, jsFileName);
+    const sourceMapPath = join(outputDir, `${jsFileName}.map`);
 
-        // Read both files
-        const [jsContent, sourceMapContent] = await Promise.all([
-          fs.readFile(jsFilePath, 'utf-8'),
-          fs.readFile(sourceMapPath, 'utf-8'),
-        ]);
+    try {
+      await fs.access(sourceMapPath);
 
-        // Validate source map
-        if (!isValidSourceMap(sourceMapContent)) {
-          if (verbose) {
-            console.log(`${projectID}: Skipping ${jsFileName} - invalid source map`);
-          }
-          continue;
-        }
+      const [jsContent, sourceMapContent] = await Promise.all([
+        fs.readFile(jsFilePath, 'utf-8'),
+        fs.readFile(sourceMapPath, 'utf-8'),
+      ]);
 
-        // Generate debug ID
-        const debugId = generateDebugId(sourceMapContent);
-
+      if (!isValidSourceMap(sourceMapContent)) {
         if (verbose) {
-          console.log(`${projectID}: Generated debug ID ${debugId} for ${jsFileName}`);
-        }
-
-        // Inject debug ID into both files
-        const updatedSourceMapContent = injectDebugIdIntoSourceMap(sourceMapContent, debugId);
-        const updatedJsContent = injectDebugIdIntoJs(jsContent, debugId);
-
-        // Write updated files
-        await Promise.all([
-          fs.writeFile(jsFilePath, updatedJsContent, 'utf-8'),
-          fs.writeFile(sourceMapPath, updatedSourceMapContent, 'utf-8'),
-        ]);
-
-        if (verbose) {
-          console.log(`${projectID}: Injected debug ID into ${jsFileName} and its source map`);
-        }
-
-        // Upload source map bundle if configured
-        if (shouldUpload) {
-          try {
-            // Create binary bundle: [js_len: u64][sm_len: u64][js_bytes][sm_bytes]
-            const jsBytes = Buffer.from(updatedJsContent, 'utf-8');
-            const smBytes = Buffer.from(updatedSourceMapContent, 'utf-8');
-            const header = Buffer.alloc(16);
-            header.writeBigUInt64LE(BigInt(jsBytes.length), 0);
-            header.writeBigUInt64LE(BigInt(smBytes.length), 8);
-            const bundleBuffer = Buffer.concat([header, jsBytes, smBytes]);
-
-            const sourceMapInfo: SourceMapInfo = {
-              debugId,
-              content: new Uint8Array(bundleBuffer),
-              jsFilePath: jsFileName,
-            };
-
-            const uploadResult = await uploadSourceMap(sourceMapInfo, {
-              serverUrl: debuginfoServerUrl,
-              token: token,
-              projectID,
-              verbose,
-              insecure,
-            });
-
-            if (!uploadResult.success && !uploadResult.skipped) {
-              if (verbose) {
-                console.log(`${projectID}: Failed to upload source map: ${uploadResult.error}`);
-              }
-            }
-          } catch (uploadError) {
-            if (verbose) {
-              console.log(`${projectID}: Upload error: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}`);
-            }
-          }
-        }
-
-      } catch (error) {
-        if (verbose) {
-          console.log(`${projectID}: Skipping ${jsFileName} - no source map or error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          console.log(`${projectID}: Skipping ${jsFileName} - invalid source map`);
         }
         continue;
       }
-    }
 
-  } catch (error) {
-    throw new Error(`Failed to process output directory ${outputDir}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const debugId = generateDebugId(sourceMapContent);
+
+      if (verbose) {
+        console.log(`${projectID}: Generated debug ID ${debugId} for ${jsFileName}`);
+      }
+
+      const updatedSourceMapContent = injectDebugIdIntoSourceMap(sourceMapContent, debugId);
+      const updatedJsContent = injectDebugIdIntoJs(jsContent, debugId);
+
+      await Promise.all([
+        fs.writeFile(jsFilePath, updatedJsContent, 'utf-8'),
+        fs.writeFile(sourceMapPath, updatedSourceMapContent, 'utf-8'),
+      ]);
+
+      if (verbose) {
+        console.log(`${projectID}: Injected debug ID into ${jsFileName} and its source map`);
+      }
+
+      // Build the upload bundle: [js_len: u64][sm_len: u64][js_bytes][sm_bytes]
+      const jsBytes = Buffer.from(updatedJsContent, 'utf-8');
+      const smBytes = Buffer.from(updatedSourceMapContent, 'utf-8');
+      const header = Buffer.alloc(16);
+      header.writeBigUInt64LE(BigInt(jsBytes.length), 0);
+      header.writeBigUInt64LE(BigInt(smBytes.length), 8);
+      const bundleBuffer = Buffer.concat([header, jsBytes, smBytes]);
+
+      bundles.push({
+        debugId,
+        content: new Uint8Array(bundleBuffer),
+        jsFilePath: jsFileName,
+      });
+    } catch (error) {
+      if (verbose) {
+        console.log(`${projectID}: Skipping ${jsFileName} - no source map or error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+      continue;
+    }
+  }
+
+  if (bundles.length === 0) {
+    if (verbose) {
+      console.log(`${projectID}: No source maps to upload`);
+    }
+    return;
+  }
+
+  // Phase 2: batch upload (shared client, parallel, with retries + sticky progress)
+  if (verbose) {
+    console.log(`${projectID}: Uploading ${bundles.length} source map(s)...`);
+  }
+
+  try {
+    const results = await uploadSourceMaps(bundles, {
+      serverUrl: debuginfoServerUrl,
+      token,
+      projectID,
+      verbose,
+      insecure,
+      concurrency,
+      maxRetries,
+    });
+
+    if (verbose) {
+      const failed = results.filter(r => !r.success);
+      for (const f of failed) {
+        console.log(`${projectID}: Failed to upload source map ${f.debugId}: ${f.error}`);
+      }
+    }
+  } catch (uploadError) {
+    if (verbose) {
+      console.log(`${projectID}: Upload error: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}`);
+    }
   }
 }
 

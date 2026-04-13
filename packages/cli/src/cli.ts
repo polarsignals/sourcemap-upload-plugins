@@ -29,6 +29,8 @@ Optional:
   --insecure                Skip TLS verification (default: false)
   --include <glob>          Glob pattern for JS files (default: **/*.js)
   --exclude <glob>          Glob pattern to exclude (default: **/node_modules/**)
+  --concurrency <n>         Maximum parallel uploads, 1 for serial (default: 50)
+  --retries <n>             Number of retry passes for failed uploads (default: 3)
 
 Environment variable overrides:
   POLARSIGNALS_PROJECT_ID   --project-id
@@ -54,6 +56,8 @@ async function main(): Promise<void> {
       'insecure': { type: 'boolean', default: false },
       'include': { type: 'string' },
       'exclude': { type: 'string' },
+      'concurrency': { type: 'string' },
+      'retries': { type: 'string' },
       'help': { type: 'boolean', default: false },
     },
   });
@@ -87,6 +91,14 @@ async function main(): Promise<void> {
   const insecure = values['insecure'] ?? false;
   const include = values['include'] ? [values['include']] : undefined;
   const exclude = values['exclude'] ? [values['exclude']] : undefined;
+  const concurrency = values['concurrency'] ? parseInt(values['concurrency'], 10) : 50;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    die(`Invalid --concurrency value: must be a positive integer, got "${values['concurrency']}"`);
+  }
+  const maxRetries = values['retries'] ? parseInt(values['retries'], 10) : 3;
+  if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+    die(`Invalid --retries value: must be a non-negative integer, got "${values['retries']}"`);
+  }
 
   if (!dryRun) {
     if (!projectId) {
@@ -110,11 +122,6 @@ async function main(): Promise<void> {
   });
 
   console.log(`Processed ${results.processed} file(s), skipped ${results.skipped}, errors ${results.errors}`);
-
-  if (results.processed === 0) {
-    console.log('No files were processed. Nothing to upload.');
-    process.exit(0);
-  }
 
   if (dryRun) {
     console.log('Dry run — skipping upload.');
@@ -160,7 +167,7 @@ async function main(): Promise<void> {
   }
 
   if (verbose) {
-    console.log(`Uploading ${bundles.length} source map(s) to ${serverUrl}...`);
+    console.log(`Uploading ${bundles.length} source map(s) to ${serverUrl} (concurrency=${concurrency})...`);
   }
 
   // Step 3: Upload
@@ -170,6 +177,8 @@ async function main(): Promise<void> {
     projectID: projectId!,
     verbose,
     insecure,
+    concurrency,
+    maxRetries,
   });
 
   // Step 4: Report
