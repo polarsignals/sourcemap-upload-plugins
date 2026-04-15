@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [0.1.6](https://github.com/polarsignals/sourcemap-upload-plugins/compare/@polarsignals/sourcemap-core@0.1.5...@polarsignals/sourcemap-core@0.1.6) (2026-04-15)
+
+**Note:** Version bump only for package @polarsignals/sourcemap-core
+
 ## [0.1.5](https://github.com/polarsignals/sourcemap-upload-plugins/compare/@polarsignals/sourcemap-core@0.1.4...@polarsignals/sourcemap-core@0.1.5) (2026-04-13)
 
 **Note:** Version bump only for package @polarsignals/sourcemap-core
